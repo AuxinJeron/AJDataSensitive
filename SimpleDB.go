@@ -2,14 +2,22 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"encoding/gob"
 	"fmt"
+	"io/ioutil"
 	"os"
 	"strings"
 )
 
 const dbFile = "./output/db.data"
+const indexFile = "./output/index.data"
+
+var indexMap map[string]int64
 
 func main() {
+	load_index()
+
 	args := os.Args[1:]
 	operation := args[0]
 	key := args[1]
@@ -35,17 +43,25 @@ func check(e error) {
 func db_get(key string) string {
 	var elem string
 	var result string
+	var pos int64
+
+	// Query the index
+	if val, ok := indexMap[key]; ok {
+		pos = val
+	}
+
 	f, err := os.Open(dbFile)
 	check(err)
 	defer f.Close()
+
 	reader := bufio.NewReader(f)
-	for {
-		line, _, err := reader.ReadLine()
-		if err != nil {
-			break
-		}
-		elem = string(line)
-	}
+	_, err = reader.Discard(int(pos))
+	check(err)
+
+	line, _, err := reader.ReadLine()
+	check(err)
+	elem = string(line)
+
 	if elem != "" {
 		split := strings.Split(elem, ",")
 		result = split[1]
@@ -56,11 +72,50 @@ func db_get(key string) string {
 func db_set(key string, value string) {
 	f, err := os.OpenFile(dbFile, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0755)
 	check(err)
-
 	defer f.Close()
 
-	bytes, err := f.WriteString(fmt.Sprintf("%s,%s\n", key, value))
+	fileInfo, err := os.Stat(dbFile)
 	check(err)
-	fmt.Printf("Wrote %d bytes\n", bytes)
+	pos := fileInfo.Size()
+
+	_, err = f.WriteString(fmt.Sprintf("%s,%s\n", key, value))
+	check(err)
 	f.Sync()
+
+	fmt.Printf("Wrote index {'%s','%d'}\n", key, pos)
+	indexMap[key] = pos
+	save_index()
+}
+
+func load_index() map[string]int64 {
+	dat, err := ioutil.ReadFile(indexFile)
+
+	if err != nil {
+		// Return an empty index map if there is no index map
+		indexMap = make(map[string]int64)
+
+		return make(map[string]int64)
+	}
+
+	// Decode the loaded index map
+	buffer := bytes.NewBuffer(dat)
+	decoder := gob.NewDecoder(buffer)
+	err = decoder.Decode(&indexMap)
+
+	fmt.Println("Loaded index:", indexMap)
+	return indexMap
+}
+
+func save_index() {
+	buffer := new(bytes.Buffer)
+	encoder := gob.NewEncoder(buffer)
+	err := encoder.Encode(indexMap)
+	check(err)
+
+	f, err := os.OpenFile(indexFile, os.O_WRONLY|os.O_CREATE, 0755)
+	check(err)
+	defer f.Close()
+
+	_, err = f.Write(buffer.Bytes())
+	check(err)
 }
